@@ -14,6 +14,7 @@ import astropy.units as u
 import desiutil.log
 
 import desisurvey.config
+import pdb
 
 
 def wrap(angle, offset):
@@ -123,7 +124,7 @@ class Optimizer(object):
             idx = tiles.index(subset)
             # Check that all tiles in the subset belong to program.
             passes = np.unique(tiles.passnum[idx])
-            if np.any(tiles.pass_program[passes] != program):
+            if np.any([tiles.pass_program[p0] != program for p0 in passes]):
                 raise ValueError('Subset contains non-{} tiles.'.format(program))
             tile_sel = np.zeros(tiles.ntiles, bool)
             tile_sel[idx] = True
@@ -135,6 +136,7 @@ class Optimizer(object):
         self.ra = wrap(tiles.tileRA[tile_sel], self.origin)
         self.dec = tiles.tileDEC[tile_sel]
         self.tid = tiles.tileID[tile_sel]
+        self.ebv = tiles.tileEBV[tile_sel]
         self.idx = np.where(tile_sel)[0]
         self.ntiles = len(self.ra)
 
@@ -602,6 +604,25 @@ class Optimizer(object):
         self.plan_tiles = self.get_plan(self.ha)
         self.use_plan()
 
+    def optimize_ha(self, guess=None):
+        """Optimize the LST assignments of tiles.
+
+        Returns parameters to model_lst_balanced that give optimized LSTs.
+        """
+        tiledat = np.array([(r, d, ebv)
+                            for (r, d, ebv)
+                            in zip(self.ra, self.dec, self.ebv)],
+                           dtype=[('ra', 'f4'), ('dec', 'f4'),
+                                  ('ebv_med', 'f4')])
+        res = hafit(tiledat, self.lst_hist, self.lst_edges, lmax=3,
+                    guess=guess)
+        self.ha = ((res[0]-tiledat['ra']+180) % 360)-180
+        self.plan_tiles = self.get_plan(self.ha)
+        self.use_plan()
+        self.lstparam = res[2][0]
+        return res[2][0]
+
+
     def plot(self, save=None, relative=True):
         """Plot the current optimzation status.
 
@@ -670,6 +691,206 @@ class Optimizer(object):
             plt.savefig(save)
         else:
             plt.show()
+
+
+def hadec2airmass(ha, dec):
+    config = desisurvey.config.Configuration()
+    latitude = np.radians(config.location.latitude())
+    tile_coef_A = np.sin(dec*np.pi/180.) * np.sin(latitude)
+    tile_coef_B = np.cos(dec*np.pi/180.) * np.cos(latitude)
+    cosZ = tile_coef_A + tile_coef_B * np.cos(ha*np.pi/180)
+    cosZ[cosZ < 0.2] = 0.2
+    return 1./cosZ
+
+
+def balance(pts, exptime, hist, bins, smooth=True):
+    startbin = np.min(bins)
+    pts = ((pts-startbin) % 360)+startbin
+    hcdf = np.cumsum(hist)
+    hcdf /= hcdf[-1]
+    if not smooth:
+        s = np.argsort(pts)
+        pcdf = np.cumsum(exptime[s])
+        pcdf /= pcdf[-1]
+        newpts = np.zeros_like(pts)
+        newpts[s] = np.interp(pcdf,
+                              np.concatenate([[0], hcdf]), bins)
+        return newpts
+
+    bin = np.interp(pts, bins, np.arange(len(bins), dtype='f4'))
+    bin = (bin - 0.5) % (len(bins) - 1)
+    ufrac = bin-np.floor(bin)
+    lfrac = 1-ufrac
+    phist = np.bincount(np.floor(bin).astype('i4'), weights=lfrac*exptime,
+                        minlength=len(bins)-1)
+    phist += np.bincount(np.ceil(bin).astype('i4') % (len(bins) - 1),
+                         weights=ufrac*exptime, minlength=len(bins)-1)
+    pcdf = np.cumsum(phist)
+    pcdf /= pcdf[-1]
+    pcdf_pts = np.interp(pts, bins, np.concatenate([[0], pcdf]))
+    newpts = np.interp(pcdf_pts, np.concatenate([[0], hcdf]), bins)
+    return newpts
+
+
+def make_ylmcache(ll, tiles):
+    from scipy.special import sph_harm
+    model_lst_ylm.ylmcache = np.zeros((len(tiles), (ll+1)**2), dtype='f4')
+    tt = (90-tiles['dec'])*np.pi/180
+    pp = tiles['ra']*np.pi/180
+    count = 0
+    for l0 in range(ll+1):
+        for m0 in range(-l0, l0+1):
+            ylm = ((-1)**m0)*sph_harm(np.abs(m0), l0, pp, tt)
+            if m0 < 0:
+                ylm = np.imag(ylm)
+            else:
+                ylm = np.real(ylm)
+            if m0 != 0:
+                ylm *= np.sqrt(2)
+            model_lst_ylm.ylmcache[:, count] = ylm
+            count += 1
+    return model_lst_ylm.ylmcache
+
+
+def model_lst_ylm(tiles, p):
+    self = model_lst_ylm
+    ha = np.sum(self.ylmcache*p.reshape(1, -1), axis=1)
+    # print(np.max(np.abs(p)), np.std(ha))
+    return (tiles['ra']+ha) % 360
+
+
+def model_lst_balanced(tiles, lst_hist, lst_bins, exptime, par,
+                       debug=False):
+    lsti = model_lst_ylm(tiles, par)
+    hai = lsti-tiles['ra']
+    airmass = hadec2airmass(hai, tiles['dec'])
+    airmass_factor = desisurvey.etc.airmass_exposure_factor(airmass)
+    lsti = balance(lsti, airmass_factor*exptime, lst_hist, lst_bins)
+    hai = lsti-tiles['ra']
+    airmass = hadec2airmass(hai, tiles['dec'])
+    airmass_factor = desisurvey.etc.airmass_exposure_factor(airmass)
+    lst = balance(lsti, airmass_factor*exptime, lst_hist, lst_bins)
+
+    return lst
+
+
+def chi_lst(tiles, lst_hist, lst_bins, exptime, par):
+    lst = model_lst_balanced(tiles, lst_hist, lst_bins, exptime, par)
+    airmass = hadec2airmass(lst-tiles['ra'], tiles['dec'])
+    airmass_factor = desisurvey.etc.airmass_exposure_factor(airmass)
+    chi = np.sqrt(airmass_factor*exptime)
+    return chi
+
+
+def hafit(tiles, lst_hist, lst_bins, lmax=5, guess=None):
+    if len(tiles) == 0:
+        return np.array([], dtype='f4'), np.array([], dtype='f4'), None
+    dust_factor = desisurvey.etc.dust_exposure_factor(tiles['ebv_med'])
+
+    def chi(par):
+        return chi_lst(tiles, lst_hist, lst_bins, dust_factor, par)
+
+    make_ylmcache(lmax, tiles)
+    from scipy.optimize import leastsq
+    if guess is None:
+        guess = [0.]*(lmax+1)**2
+    guess[0] = initial_search(tiles, lst_hist, lst_bins, guess)
+    res = leastsq(chi, guess, full_output=True,
+                  epsfcn=0.0001)
+    lst = model_lst_balanced(tiles, lst_hist, lst_bins, dust_factor, res[0])
+    exptime = guess_time_needed(tiles, lst-tiles['ra'])
+    lst = balance(lst, exptime, lst_hist, lst_bins, smooth=False)
+    exptime = guess_time_needed(tiles, lst-tiles['ra'])
+    return (lst, exptime, res)
+
+
+def initial_search(tiles, lst_hist, lst_bins, guess):
+    offset = np.linspace(-60, 60, 121)+guess[0]
+    dust_factor = desisurvey.etc.dust_exposure_factor(tiles['ebv_med'])
+    etimes = []
+    for o in offset:
+        tguess = np.array(guess).copy()
+        tguess[0] = o
+        chi = chi_lst(tiles, lst_hist, lst_bins, dust_factor, tguess)
+        etimes.append(np.sum(chi**2))
+    return offset[np.argmin(etimes)]
+
+
+def generate_lst_hist(nbins=192, include_twilight=False, start=None,
+                      stop=None, hours_needed=None):
+    import desimodel
+    import desisurvey.ephem
+    ephem = desisurvey.ephem.get_ephem()
+    config = desisurvey.config.Configuration()
+    first = desisurvey.ephem.START_DATE
+    last = desisurvey.ephem.STOP_DATE
+    years = np.arange(2007, 2018)
+    fractions = []
+    for year in years:
+        fractions.append(
+            desimodel.weather.dome_closed_fractions(
+                first, last, replay='Y{}'.format(year)))
+    weather = 1 - np.mean(fractions, axis=0)
+    if start is None:
+        start = config.first_day()
+    if stop is None:
+        stop = config.last_day()
+    assert start >= first and stop <= last
+    ilo, ihi = (start - first).days, (stop - first).days
+    lst_hist, lst_bins = ephem.get_available_lst(
+        nbins=nbins, start_date=start, weather=weather[ilo:ihi],
+        include_twilight=include_twilight, hours_needed=hours_needed)
+    return lst_hist, lst_bins
+
+
+def guess_time_needed(tiles, ha):
+    airmass = hadec2airmass(ha, tiles['dec'])
+    airmass_factor = desisurvey.etc.airmass_exposure_factor(airmass)
+    dust_factor = desisurvey.etc.dust_exposure_factor(tiles['ebv_med'])
+    return airmass_factor*dust_factor
+
+
+def hafit_all(start=None, include_twilight=False, completed=None,
+              guess=None, guessha=None, lmax=5, **kw):
+    from desisurvey import tiles as tilesmod
+    tiles = tilesmod.get_tiles()
+    ha = np.zeros_like(tiles.tileRA)
+    tiledat = np.array([(r, d, ebv)
+                        for (r, d, ebv)
+                        in zip(tiles.tileRA, tiles.tileDEC, tiles.tileEBV)],
+                       dtype=[('ra', 'f4'), ('dec', 'f4'),
+                              ('ebv_med', 'f4')])
+    par = []
+    if guess is None:
+        guess = [None]*len(tiles.PROGRAMS)
+    if guessha is None:
+        guessha = np.full(len(tiledat), 15, dtype='f8')
+    hours_needed = np.zeros(len(tiles.PROGRAMS), dtype='f4')
+    for pindx, program in enumerate(tiles.PROGRAMS):
+        sel = tiles.program_mask[program]
+        if completed is not None:
+            sel = sel & ~completed
+        if np.sum(sel) == 0:
+            hours_needed[pindx] = 0
+        else:
+            hours_needed[pindx] = np.sum(guess_time_needed(tiledat[sel],
+                                                           ha=guessha[sel]))
+    lst_hist, lst_bins = generate_lst_hist(
+        include_twilight=include_twilight, start=start,
+        hours_needed=hours_needed)
+    for pindex, program in enumerate(tiles.PROGRAMS):
+        sel = tiles.program_mask[program]
+        if completed is not None:
+            sel = sel & ~completed
+        if np.sum(sel) == 0:
+            par.append(None)
+            continue
+
+        lst, exptime, res = hafit(tiledat[sel], lst_hist[pindex], lst_bins,
+                                  guess=guess[pindex], lmax=lmax, **kw)
+        par.append(res[0].copy())
+        ha[sel] = ((lst-tiledat['ra'][sel]+180) % 360)-180
+    return ha, par
 
 
 if __name__ == '__main__':

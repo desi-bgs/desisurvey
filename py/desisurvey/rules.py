@@ -57,6 +57,7 @@ class Rules(object):
 
         tiles = desisurvey.tiles.get_tiles()
         NGC = (tiles.tileRA > 75.0) & (tiles.tileRA < 300.0)
+        # really fragile!
         SGC = ~NGC
 
         # Initialize regexp for parsing "GROUP_NAME(PASS)"
@@ -157,10 +158,12 @@ class Rules(object):
                     dec_priority[group_sel] = 1.0
                 elif slope > 0:
                     dec_priority[group_sel] = (
-                        1 + slope * (hi-dec_group) / (hi-lo))
+                        # 1 + slope * (hi-dec_group) / (hi-lo))
+                        np.exp((lo-dec_group)*slope))
                 else:
                     dec_priority[group_sel] = (
-                        1 - slope * (dec_group-lo) / (hi-lo))
+                        # 1 - slope * (dec_group-lo) / (hi-lo))
+                        np.exp((hi-dec_group)*slope))
             else:
                 assert np.all(dec_priority[group_sel] == 1)
 

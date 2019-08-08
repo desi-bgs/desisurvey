@@ -8,11 +8,11 @@
 # schedule as soon as they have fibers assigned.
 
 NHI:
-    # Expand upwards from DEC=18deg in all passes.
+    # Expand upwards from DEC=0deg in all passes.
     cap: N
     passes: 0,1,2,3,4,5,6,7
-    dec_min: 18
-    dec_order: +0.2
+    dec_min: -0.5
+    dec_order: +0.002
     rules:
         NHI(0): { START: 1.0 }
         NHI(1): { START: 1.0 }
@@ -24,11 +24,11 @@ NHI:
         NHI(7): { START: 1.0 }
 
 NLO:
-    # Expand downwards from DEC=18deg in all passes.
+    # Expand downwards from DEC=0deg in all passes.
     cap: N
     passes: 0,1,2,3,4,5,6,7
-    dec_max: 18
-    dec_order: -0.2
+    dec_max: -0.5
+    dec_order: -0.002
     rules:
         NLO(0): { START: 1.0 }
         NLO(1): { START: 1.0 }
@@ -40,11 +40,11 @@ NLO:
         NLO(7): { START: 1.0 }
 
 SHI:
-    # Expand upwards from DEC=2deg in all passes.
+    # Expand upwards from DEC=0deg in all passes.
     cap: S
     passes: 0,1,2,3,4,5,6,7
-    dec_min: 2
-    dec_order: +0.2
+    dec_min: -0.5
+    dec_order: +0.002
     rules:
         SHI(0): { START: 1.0 }
         SHI(1): { START: 1.0 }
@@ -56,11 +56,11 @@ SHI:
         SHI(7): { START: 1.0 }
 
 SLO:
-    # Expand upwards from DEC=2deg in all passes.
+    # Expand downwards from DEC=0deg in all passes.
     cap: S
     passes: 0,1,2,3,4,5,6,7
-    dec_max: 2
-    dec_order: -0.2
+    dec_max: -0.5
+    dec_order: -0.002
     rules:
         SLO(0): { START: 1.0 }
         SLO(1): { START: 1.0 }

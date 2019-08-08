@@ -537,7 +537,7 @@ class Ephemerides(object):
 
     def get_available_lst(self, start_date=None, stop_date=None, nbins=192, origin=-60,
                           weather=None, include_monsoon=False, include_full_moon=False,
-                          include_twilight=False):
+                          include_twilight=False, hours_needed=None):
         """Calculate histograms of available LST for each program.
 
         Parameters
@@ -566,6 +566,9 @@ class Ephemerides(object):
             Include nights during the monthly full-moon breaks.
         include_twilight : bool
             Include twilight in the BRIGHT program when True.
+        hours_needed : list of NPROGRAM floats, or None
+            Number of hours needed to complete program.  If set, include only
+            the LST needed to give each program hours_needed.
 
         Returns
         -------
@@ -613,6 +616,9 @@ class Ephemerides(object):
             # Loop over programs during the night.
             for i, prog_index in enumerate(programs):
                 phist = lst_hist[prog_index]
+                if ((hours_needed is not None) and
+                    (np.sum(phist) > hours_needed[prog_index])):
+                    continue
                 lo, hi = lst_bin[i:i + 2]
                 # Ensure that 0 <= lo < nbins
                 left_edge = np.floor(lo / nbins) * nbins

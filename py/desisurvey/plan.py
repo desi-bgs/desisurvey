@@ -376,4 +376,24 @@ class Planner(object):
         # Update tile priorities.
         if self.rules is not None:
             self.tile_priority = self.rules.apply(completed)
+        self.tile_priority *= self.adjacency_priority(completed)
         return self.tile_available, self.tile_priority
+
+    def adjacency_priority(self, completed):
+        config = desisurvey.config.Configuration()
+        tile_diameter = 2 * config.tile_radius().to(u.deg).value
+        priority = np.ones(len(completed), dtype='f4')
+        for program in self.tiles.PROGRAMS:
+            m = self.tiles.program_mask[program]
+            m1, m2, d12 = desisurvey.utils.match_radec(
+                self.tiles.tileRA[m], self.tiles.tileDEC[m],
+                self.tiles.tileRA[m], self.tiles.tileDEC[m], tile_diameter,
+                notself=True)
+            nneighbor = np.bincount(m1, minlength=np.sum(m))
+            completedneighbor = np.bincount(m2[completed[m][m1]],
+                                            minlength=np.sum(m))
+            fracneighborcompleted = (
+                completedneighbor / (1.*nneighbor+(nneighbor == 0)))
+            adjbonus = getattr(config.adjacency_priority, program)()
+            priority[m] += adjbonus * fracneighborcompleted
+        return priority

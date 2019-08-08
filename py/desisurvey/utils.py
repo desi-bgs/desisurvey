@@ -419,3 +419,112 @@ def separation_matrix(ra1, dec1, ra2, dec2, max_separation=None):
         return havPHI <= threshold
     else:
         return np.rad2deg(np.arccos(np.clip(1 - 2 * havPHI, -1, +1)))
+
+
+def lb2uv(l, b):
+    """Convert longitude and latitude to unit vectors on sphere.
+
+    Parameters
+    ----------
+    l : array
+      1D array of N RA coordinates in degrees (without units)
+    b : array
+      1D array of N DEC coordinates in degrees (without units)
+
+    Returns
+    -------
+    array
+        Array with shape [N, 3] giving unit vectors corresponding to l, b.
+    """
+    t = np.deg2rad(90-b)
+    p = np.deg2rad(l)
+    z = np.cos(t)
+    x = np.cos(p)*np.sin(t)
+    y = np.sin(p)*np.sin(t)
+    return np.concatenate([q[..., np.newaxis] for q in (x, y, z)],
+                          axis=-1)
+
+
+def gc_dist(lon1, lat1, lon2, lat2):
+    """Compute distance on sphere in degrees between lon1, lat1 and lon2, lat2.
+    """
+
+    from numpy import sin, cos, arcsin, sqrt
+
+    lon1 = np.radians(lon1)
+    lat1 = np.radians(lat1)
+    lon2 = np.radians(lon2)
+    lat2 = np.radians(lat2)
+
+    return np.degrees(
+        2*arcsin(sqrt((sin((lat1-lat2)*0.5))**2 +
+                      cos(lat1)*cos(lat2)*(sin((lon1-lon2)*0.5))**2)))
+
+
+def match_radec(r1, d1, r2, d2, rad=1./60./60., nneighbor=0, notself=False):
+    """Return matches between points (r1, d1) and (r2, d2) within radius.
+
+    Uses kd-trees to avoid making all N^2 comparisons; much faster than
+    separation_matrix when there are few matches relative to N^2.
+
+    Parameters
+    ----------
+    r1 : array
+        1D array of n1 RA coordinates in degrees (without units attached)
+    d1 : array
+        1D array of n1 DEC coordinates in degrees (without units attached)
+    r2 : array
+        1D array of n2 RA coordinates in degrees (without units attached)
+    d2 : array
+        1D array of n2 DEC coordinates in degrees (without units attached)
+    rad : float
+        find matches out to rad degrees
+    nneighbor : int
+        find up to nneighbor matches
+    notself : boolean
+        if the r1 and d1, r2 and and d2 arrays are identical, do not report
+        self matches.
+
+    Returns
+    -------
+    m1, m2, d12
+    m1 : array (int)
+       indices into (r1, d1) of matches
+    m2 : array (int)
+       indices into (r2, d2) of matches
+    d12 : array (float)
+       separations between each match
+    """
+    # warning: cKDTree has issues if there are large numbers of points
+    # at the exact same positions (it takes forever / reaches maximum
+    # recursion depth).
+    if notself and nneighbor > 0:
+        nneighbor += 1
+    uv1 = lb2uv(r1, d1)
+    uv2 = lb2uv(r2, d2)
+    from scipy.spatial import cKDTree
+    tree = cKDTree(uv2)
+    dub = 2*np.sin(np.radians(rad)/2)
+    if nneighbor > 0:
+        d12, m2 = tree.query(uv1, nneighbor, distance_upper_bound=dub)
+        if nneighbor > 1:
+            m2 = m2.reshape(-1)
+            d12 = d12.reshape(-1)
+
+        m1 = np.arange(len(r1)*nneighbor, dtype='i4') // nneighbor
+        d12 = 2*np.arcsin(np.clip(d12 / 2, 0, 1))*180/np.pi
+        m = m2 < len(r2)
+    else:
+        tree1 = cKDTree(uv1)
+        res = tree.query_ball_tree(tree1, dub)
+        lens = [len(r) for r in res]
+        m2 = np.repeat(np.arange(len(r2), dtype='i4'), lens)
+        if len(m2) > 0:
+            m1 = np.concatenate([r for r in res if len(r) > 0])
+        else:
+            m1 = m2.copy()
+        d12 = gc_dist(r1[m1], d1[m1], r2[m2], d2[m2])
+        m = np.ones(len(m1), dtype='bool')
+    if notself:
+        m = m & (m1 != m2)
+    return m1[m], m2[m], d12[m]

@@ -68,6 +68,7 @@ class Tiles(object):
         self.tileRA = tiles['RA'].copy()
         self.tileDEC = tiles['DEC'].copy()
         self.tileobsconditions = tiles['OBSCONDITIONS'].copy()
+        self.tileEBV = tiles['EBV_MED'].copy()
         # Count tiles.
         self.ntiles = len(self.tileID)
         self.pass_ntiles = {p: np.count_nonzero(self.passnum == p)
